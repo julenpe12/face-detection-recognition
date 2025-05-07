@@ -7,7 +7,8 @@ def main():
     face_detector = cv2.FaceDetectorYN.create(
         model_path,
         "",
-        (0, 0)
+        (0, 0),
+        0.5
     )
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
