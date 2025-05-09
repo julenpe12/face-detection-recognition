@@ -29,7 +29,7 @@ class FaceDetectorYuNet:
 # =============================================================================
 class FaceRecognizerMobileFaceNetTorch:
     def __init__(self,
-                 model_path="models/mobilefacenet_scripted.pt",
+                 model_path="models/mobilefacenet_scripted_int8.pt",
                  device="cpu"):
         self.device = device if torch.cuda.is_available() else "cpu"
         self.model = torch.jit.load(model_path, map_location=self.device).to(self.device).eval()
