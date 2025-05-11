@@ -2,7 +2,7 @@ import cv2
 
 def main():
     # Path to YuNet ONNX model
-    model_path = "models/face_detection_yunet_2023mar.onnx"
+    model_path = "models/face_detection_yunet_2023mar_int8.onnx"
     
     face_detector = cv2.FaceDetectorYN.create(
         model_path,
