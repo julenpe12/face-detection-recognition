@@ -116,6 +116,8 @@ def main():
     output_name = sess.get_outputs()[0].name
 
     cap = cv2.VideoCapture(DEVICE_ID)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     if not cap.isOpened():
         sys.exit("Couldn't open the camera " + str(DEVICE_ID))
 
