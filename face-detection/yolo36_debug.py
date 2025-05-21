@@ -140,8 +140,16 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX,0.7,(100,255,0),2)
         cv2.putText(frame,f"RAM:{sum(mem_buf)/len(mem_buf):.1f}MB",(5,90),
                     cv2.FONT_HERSHEY_SIMPLEX,0.7,(100,255,0),2)
-        cv2.putText(frame,f"GPU:{sum(gpu_buf)/len(gpu_buf):.1f}%",(5,120),
-                    cv2.FONT_HERSHEY_SIMPLEX,0.7,(100,255,0),2)
+        # Calcula el promedio de GPU solo si hay datos; en caso contrario usa 0%
+        avg_gpu = sum(gpu_buf) / len(gpu_buf) if gpu_buf else 0.0
+
+        cv2.putText(
+            frame,
+            f"GPU:{avg_gpu:.1f}%",
+            (5, 120),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100,255,0), 2
+        )
+
 
         cv2.imshow("YOLO36 Debug – q to quit", frame)
         if cv2.waitKey(1)&0xFF==ord('q'): break
