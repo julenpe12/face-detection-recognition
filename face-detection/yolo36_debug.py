@@ -1,20 +1,23 @@
-# yolo36_debug.py
-# YOLOv8n-face con ONNX Runtime en Python 3.6
-# Debug: muestra FPS, uso RAM, CPU y GPU
+# yolo_face_rt.py
+# Detección de rostros con YOLOv8n-face (ONNX) + OpenCV + ONNX Runtime
+# Compatible con Python 3.6, aceleración por CUDA, ROCm, DirectML o CPU
 
 from __future__ import division, print_function
-import cv2, time, collections, psutil, os
+import cv2
 import numpy as np
 import onnxruntime as ort
+import time
+import sys
+import psutil
 import GPUtil
 from pathlib import Path
 
 # --- Configuración ----------------------------------------------------------
 MODEL_PATH = "models/yolov8n-face.onnx"
-INPUT_SIZE  = 640
-CONF_THRES  = 0.25
-NMS_THRES   = 0.45
-DEVICE_ID   = 0
+INPUT_SIZE  = 640          # tamaño de entrada cuadrado
+CONF_THRES  = 0.25         # umbral de confianza
+NMS_THRES   = 0.45         # umbral de supresión no-máxima
+DEVICE_ID   = 0            # cámara (0 por defecto)
 # ---------------------------------------------------------------------------
 
 def letterbox(img, new_size=640, color=(114, 114, 114)):
@@ -83,79 +86,83 @@ def postprocess(pred, scale, left, top, orig_shape):
     return [(boxes[i].astype(int), float(scores[i])) for i in keep]
 
 def get_execution_providers():
-    preferred = ["CUDAExecutionProvider","CPUExecutionProvider"]
-    avail = ort.get_available_providers()
-    return [p for p in preferred if p in avail]
+    """Devuelve el mejor proveedor disponible, en orden de preferencia."""
+    preferred = [
+        "CUDAExecutionProvider",
+        "DmlExecutionProvider",
+        "ROCMExecutionProvider",
+        "MIGraphXExecutionProvider",
+        "CPUExecutionProvider"
+    ]
+    available = ort.get_available_providers()
+    for p in preferred:
+        if p in available:
+            return [p]
+    return ["CPUExecutionProvider"]
 
 def main():
     if not Path(MODEL_PATH).is_file():
-        sys.exit("Modelo ONNX no encontrado: " + MODEL_PATH)
-    sess = ort.InferenceSession(MODEL_PATH, providers=get_execution_providers())
-    input_name = sess.get_inputs()[0].name
+        sys.exit("ONNX model not found: " + MODEL_PATH)
+
+    providers = get_execution_providers()
+    print("🧠 ONNX Runtime provider selected:", providers[0])
+    try:
+        sess = ort.InferenceSession(MODEL_PATH, providers=providers)
+    except Exception as e:
+        print("⚠️ Couldn't start", providers[0])
+        print("→ Error:", str(e))
+        print("↪ Using CPUExecutionProvider.")
+        sess = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
+
+    input_name  = sess.get_inputs()[0].name
     output_name = sess.get_outputs()[0].name
 
     cap = cv2.VideoCapture(DEVICE_ID)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     if not cap.isOpened():
-        sys.exit("No se pudo abrir la cámara.")
+        sys.exit("Couldn't open the camera " + str(DEVICE_ID))
 
-    proc = psutil.Process(os.getpid())
-    cores = psutil.cpu_count(logical=True)
-    fps_buf = collections.deque(maxlen=30)
-    cpu_buf = collections.deque(maxlen=30)
-    mem_buf = collections.deque(maxlen=30)
-    gpu_buf = collections.deque(maxlen=30)
-    prev_t = time.time()
-    frame_count = 0
+    process = psutil.Process(os.getpid())
 
+    print("▶️  Real-time inference started. Press 'Q' to exit.")
     while True:
         ret, frame = cap.read()
-        if not ret: break
-        frame_count += 1
+        if not ret:
+            break
 
-        # Métricas
-        mem_buf.append(proc.memory_info().rss/(1024*1024))
-        cpu_buf.append(proc.cpu_percent()/cores)
-        if frame_count%10==0:
-            g = GPUtil.getGPUs()
-            gpu_buf.append(g[0].load*100 if g else 0)
-        t = time.time()
-        fps_buf.append(1/(t-prev_t)); prev_t = t
+        # Medición de CPU y GPU
+        cpu_pct = psutil.cpu_percent(interval=None)
+        gpus = GPUtil.getGPUs()
+        gpu_pct = gpus[0].load * 100 if gpus else 0.0
 
-        # Inferencia
-        img, sc, l, t0 = preprocess(frame)
-        pred = sess.run([output_name], {input_name:img})[0]
-        dets = postprocess(pred, sc, l, t0, frame.shape)
+        img, scale, left, top = preprocess(frame)
+        start = time.time()
+        pred = sess.run([output_name], {input_name: img})[0]
+        inf_time = (time.time() - start) * 1000
+        dets = postprocess(pred, scale, left, top, frame.shape)
 
-        for (x1,y1,x2,y2),s in dets:
-            cv2.rectangle(frame,(x1,y1),(x2,y2),(0,255,0),2)
-            cv2.putText(frame,f"{s:.2f}",(x1,y1-5),
-                        cv2.FONT_HERSHEY_SIMPLEX,0.5,(0,255,0),1)
+        for (x1, y1, x2, y2), score in dets:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, "{:.2f}".format(score),
+                        (x1, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
-        # Overlay métricas
-        cv2.putText(frame,f"FPS:{sum(fps_buf)/len(fps_buf):.1f}",(5,30),
-                    cv2.FONT_HERSHEY_SIMPLEX,0.7,(100,255,0),2)
-        cv2.putText(frame,f"CPU:{sum(cpu_buf)/len(cpu_buf):.1f}%",(5,60),
-                    cv2.FONT_HERSHEY_SIMPLEX,0.7,(100,255,0),2)
-        cv2.putText(frame,f"RAM:{sum(mem_buf)/len(mem_buf):.1f}MB",(5,90),
-                    cv2.FONT_HERSHEY_SIMPLEX,0.7,(100,255,0),2)
-        # Calcula el promedio de GPU solo si hay datos; en caso contrario usa 0%
-        avg_gpu = sum(gpu_buf) / len(gpu_buf) if gpu_buf else 0.0
+        # Overlay de métricas
+        fps = 1000 / inf_time if inf_time else 0
+        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(frame, f"CPU: {cpu_pct:.1f}%", (10, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(frame, f"GPU: {gpu_pct:.1f}%", (10, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-        cv2.putText(
-            frame,
-            f"GPU:{avg_gpu:.1f}%",
-            (5, 120),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100,255,0), 2
-        )
-
-
-        cv2.imshow("YOLO36 Debug – q to quit", frame)
-        if cv2.waitKey(1)&0xFF==ord('q'): break
+        cv2.imshow("YOLOv8n-face", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
     cap.release()
     cv2.destroyAllWindows()
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
