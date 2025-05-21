@@ -17,17 +17,70 @@ NMS_THRES   = 0.45
 DEVICE_ID   = 0
 # ---------------------------------------------------------------------------
 
-def letterbox(img, new_size=INPUT_SIZE, color=(114,114,114)):
-    h,w = img.shape[:2]
-    scale = min(new_size/h, new_size/w)
-    nh,nw = int(round(h*scale)), int(round(w*scale))
-    img_resized = cv2.resize(img, (nw,nw), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((new_size,new_size,3), color, dtype=np.uint8)
-    top, left = (new_size-nh)//2, (new_size-nw)//2
-    canvas[top:top+nh, left:left+nw] = img_resized
+def letterbox(img, new_size=640, color=(114, 114, 114)):
+    h, w = img.shape[:2]
+    scale = min(new_size / h, new_size / w)
+    nh, nw = int(round(h * scale)), int(round(w * scale))
+    img_resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    canvas = np.full((new_size, new_size, 3), color, dtype=np.uint8)
+    top = (new_size - nh) // 2
+    left = (new_size - nw) // 2
+    canvas[top:top + nh, left:left + nw] = img_resized
     return canvas, scale, left, top
 
-# ... (gnss: incluye funciones xywh2xyxy, iou, non_max_suppression, preprocess, postprocess tal cual en tu script)
+def xywh2xyxy(x):
+    y = np.copy(x)
+    y[..., 0] = x[..., 0] - x[..., 2] / 2
+    y[..., 1] = x[..., 1] - x[..., 3] / 2
+    y[..., 2] = x[..., 0] + x[..., 2] / 2
+    y[..., 3] = x[..., 1] + x[..., 3] / 2
+    return y
+
+def iou(box, boxes):
+    inter = (np.maximum(0, np.minimum(boxes[:, 2], box[2]) -
+                           np.maximum(boxes[:, 0], box[0])) *
+             np.maximum(0, np.minimum(boxes[:, 3], box[3]) -
+                           np.maximum(boxes[:, 1], box[1])))
+    area_box = (box[2] - box[0]) * (box[3] - box[1])
+    area_boxes = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+    union = area_box + area_boxes - inter + 1e-6
+    return inter / union
+
+def non_max_suppression(boxes, scores, iou_thres=0.45):
+    idxs = scores.argsort()[::-1]
+    keep = []
+    while idxs.size:
+        i = idxs[0]
+        keep.append(i)
+        if idxs.size == 1:
+            break
+        ious = iou(boxes[i], boxes[idxs[1:]])
+        idxs = idxs[1:][ious < iou_thres]
+    return keep
+
+def preprocess(frame):
+    img, scale, left, top = letterbox(frame, INPUT_SIZE)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    img = np.transpose(img, (2, 0, 1))[None]
+    return img, scale, left, top
+
+def postprocess(pred, scale, left, top, orig_shape):
+    pred = np.squeeze(pred).transpose(1, 0)
+    boxes = xywh2xyxy(pred[:, :4])
+    scores = pred[:, 4]
+    mask = scores > CONF_THRES
+    boxes, scores = boxes[mask], scores[mask]
+    if boxes.size == 0:
+        return []
+
+    boxes[:, [0, 2]] -= left
+    boxes[:, [1, 3]] -= top
+    boxes /= scale
+    h, w = orig_shape[:2]
+    boxes[:, [0, 2]] = np.clip(boxes[:, [0, 2]], 0, w - 1)
+    boxes[:, [1, 3]] = np.clip(boxes[:, [1, 3]], 0, h - 1)
+    keep = non_max_suppression(boxes, scores, NMS_THRES)
+    return [(boxes[i].astype(int), float(scores[i])) for i in keep]
 
 def get_execution_providers():
     preferred = ["CUDAExecutionProvider","CPUExecutionProvider"]
