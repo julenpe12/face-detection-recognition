@@ -12,6 +12,8 @@ import psutil
 import GPUtil
 from pathlib import Path
 
+import os
+
 # --- Configuración ----------------------------------------------------------
 MODEL_PATH = "models/yolov8n-face.onnx"
 INPUT_SIZE  = 640          # tamaño de entrada cuadrado
