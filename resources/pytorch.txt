@@ -1,3 +1,3 @@
-wget https://nvidia.box.com/shared/static/9eptse6jyly1ggt9axbja2yrmj6pbarc.whl
+wget https://nvidia.box.com/shared/static/fjtbno0vpo676a25cgvuqc1wty0fkkg6.whl
 mv 9eptse6jyly1ggt9axbja2yrmj6pbarc.whl torch-1.10.0-cp36-cp36m-linux_aarch64.whl
 pip install --no-cache-dir torch-1.10.0-cp36-cp36m-linux_aarch64.whl
