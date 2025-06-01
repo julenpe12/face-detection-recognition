@@ -1,27 +1,30 @@
-########################################
-# Script 2: Con persistencia (guardado/carga), sin métricas
-########################################
 import cv2
 import numpy as np
 import pickle
 import os
+
+# Ruta al archivo Haar Cascade (debe descargarse y colocarse en el mismo directorio)
+CASCADE_PATH = "models/haarcascade_frontalface_default.xml"
 
 MODEL_PATH = "models/arcface_int8.onnx"
 DB_FILE    = "trained/arcface_db.pkl"
 RECOGNITION_THRESHOLD = 0.3
 
 class FaceDetectorHaar:
-    def __init__(self, cascade_path=cv2.data.haarcascades + "haarcascade_frontalface_default.xml",
-                 scaleFactor=1.1, minNeighbors=5):
+    def __init__(self, cascade_path=CASCADE_PATH, scaleFactor=1.1, minNeighbors=5):
+        if not cv2.os.path.exists(cascade_path):
+            raise ValueError(f"Cascade file not found: {cascade_path}")
         self.cascade = cv2.CascadeClassifier(cascade_path)
         self.scaleFactor = scaleFactor
         self.minNeighbors = minNeighbors
 
     def detect(self, image):
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        return self.cascade.detectMultiScale(gray,
-                                            scaleFactor=self.scaleFactor,
-                                            minNeighbors=self.minNeighbors)
+        return self.cascade.detectMultiScale(
+            gray,
+            scaleFactor=self.scaleFactor,
+            minNeighbors=self.minNeighbors
+        )
 
 class FaceRecognizerArcFace:
     def __init__(self, model_path=MODEL_PATH, threshold=RECOGNITION_THRESHOLD):
@@ -34,7 +37,7 @@ class FaceRecognizerArcFace:
 
     def preprocess(self, face_image):
         rgb = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
-        resized = cv2.resize(rgb, (112,112))
+        resized = cv2.resize(rgb, (112, 112))
         return cv2.dnn.blobFromImage(resized)
 
     def extract(self, face_image):
@@ -42,7 +45,7 @@ class FaceRecognizerArcFace:
         self.model.setInput(blob)
         emb = self.model.forward().flatten()
         norm = np.linalg.norm(emb)
-        return emb/norm if norm>0 else emb
+        return (emb / norm) if norm > 0 else emb
 
     def add_sample(self, face_image, label):
         emb = self.extract(face_image)
@@ -53,80 +56,99 @@ class FaceRecognizerArcFace:
         emb = self.extract(face_image)
         if not self.features_database:
             return "Unknown", 1.0
-        sims = np.dot(self.features_database, emb)
+        sims = np.dot(np.array(self.features_database), emb)
         dists = 1 - sims
-        i = np.argmin(dists)
-        return self.labels[i], dists[i]
-
+        idx = np.argmin(dists)
+        return self.labels[idx], dists[idx]
 
 def save_db(recognizer, path=DB_FILE):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'wb') as f:
-        pickle.dump({'features': recognizer.features_database,
-                     'labels': recognizer.labels}, f)
+    with open(path, "wb") as f:
+        pickle.dump({
+            "features": recognizer.features_database,
+            "labels": recognizer.labels
+        }, f)
     print("Base de datos guardada.")
-
 
 def load_db(recognizer, path=DB_FILE):
     if os.path.exists(path):
-        with open(path, 'rb') as f:
+        with open(path, "rb") as f:
             data = pickle.load(f)
-        recognizer.features_database = data['features']
-        recognizer.labels = data['labels']
+        recognizer.features_database = data["features"]
+        recognizer.labels = data["labels"]
         print("Base de datos cargada.")
-
 
 def main():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("Error al abrir cámara.")
+        print("Error: no se pudo abrir la cámara.")
         return
 
     detector = FaceDetectorHaar()
     recognizer = FaceRecognizerArcFace()
     load_db(recognizer)
 
-    training = False
-    samples = 0
-    target = 250
+    training_mode = False
     current_label = None
+    sample_count = 0
+    target_samples = 250
 
-    print("'T' entrenar, 'q' salir.")
+    print("Presione 'T' para iniciar entrenamiento, 'q' para salir.")
+
     while True:
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            break
 
         faces = detector.detect(frame)
-        if training and len(faces)>0:
-            x,y,w,h = faces[0]
-            roi = frame[y:y+h, x:x+w]
-            recognizer.add_sample(roi, current_label)
-            samples += 1
-            if samples>= target:
-                save_db(recognizer)
-                training = False
-                samples = 0
-                print(f"Entrenamiento finalizado: '{current_label}'")
 
+        if training_mode and len(faces) > 0:
+            x, y, w, h = faces[0]
+            if x < 0 or y < 0 or x+w > frame.shape[1] or y+h > frame.shape[0]:
+                continue
+            roi = frame[y:y+h, x:x+w]
+            if roi.size == 0:
+                continue
+            recognizer.add_sample(roi, current_label)
+            sample_count += 1
+            if sample_count >= target_samples:
+                save_db(recognizer)
+                training_mode = False
+                sample_count = 0
+                print(f"Entrenamiento finalizado para '{current_label}'.")
         else:
-            for (x,y,w,h) in faces:
+            for (x, y, w, h) in faces:
+                if x < 0 or y < 0 or x+w > frame.shape[1] or y+h > frame.shape[0]:
+                    continue
                 roi = frame[y:y+h, x:x+w]
-                lbl, d = recognizer.recognize(roi)
-                color = (0,255,0) if d < recognizer.threshold else (0,0,255)
-                cv2.putText(frame, f"{lbl} ({d:.2f})", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-                cv2.rectangle(frame, (x,y), (x+w, y+h), color, 2)
+                if roi.size == 0:
+                    continue
+                lbl, dist = recognizer.recognize(roi)
+                color = (0, 255, 0) if dist < recognizer.threshold else (0, 0, 255)
+                cv2.putText(
+                    frame,
+                    f"{lbl} ({dist:.2f})",
+                    (x, y-10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    color,
+                    2
+                )
+                cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
 
         cv2.imshow("Feed", frame)
-        k = cv2.waitKey(1)&0xFF
-        if k==ord('q'): break
-        if k in (ord('T'),):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        if key in (ord('T'), ord('t')) and not training_mode:
             current_label = input("Etiqueta: ").strip()
             if current_label:
-                training = True
-                samples = 0
+                training_mode = True
+                sample_count = 0
+                print(f"Modo entrenamiento: '{current_label}'")
 
     cap.release()
     cv2.destroyAllWindows()
 
-if __name__=='__main__':
+if __name__ == "__main__":
     main()
