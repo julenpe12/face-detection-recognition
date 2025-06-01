@@ -5,7 +5,7 @@ import onnxruntime as ort
 
 # Ruta al Haar Cascade (descargar y colocar junto a este script)
 CASCADE_PATH = "models/haarcascade_frontalface_default.xml"
-MODEL_PATH   = "models/arcface_int8.onnx"   # Ruta al modelo ONNX de ArcFace
+MODEL_PATH   = "models/arcfaceresnet100-8.onnx"   # Ruta al modelo ONNX de ArcFace
 THRESHOLD    = 0.3                   # Umbral de distancia (coseno)
 
 class FaceDetectorHaar:
