@@ -46,9 +46,14 @@ class FaceRecognizerArcFace:
         return arr
 
     def extract_features(self, face_img):
-        blob = self.preprocess(face_img)  # shape: (1,3,112,112), dtype=float32
+        blob = self.preprocess(face_img)  # se supone (1,3,112,112), float32
+
+        # —> IMPRIME PARA COMPROBAR FORMA Y TIPO:
+        print("DEBUG extract_features → blob.shape:", blob.shape, ", blob.dtype:", blob.dtype)
+        # <—
+
         outputs = self.session.run(None, {self.input_name: blob})
-        embedding = outputs[0].reshape(-1)  # vector 1D
+        embedding = outputs[0].reshape(-1)
         norm = np.linalg.norm(embedding)
         if norm > 0:
             embedding = embedding / norm
