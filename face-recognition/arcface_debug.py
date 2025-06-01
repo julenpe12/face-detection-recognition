@@ -8,7 +8,7 @@ import collections
 import psutil
 import GPUtil
 
-MODEL_PATH = "models/arcfaceresnet100-8.onnx"
+MODEL_PATH = "models/arcface_int8.onnx"
 RECOGNITION_THRESHOLD = 0.3
 
 class FaceDetectorHaar:

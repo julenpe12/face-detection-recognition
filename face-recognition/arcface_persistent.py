@@ -6,7 +6,7 @@ import numpy as np
 import pickle
 import os
 
-MODEL_PATH = "models/arcfaceresnet100-8.onnx"
+MODEL_PATH = "models/arcface_int8.onnx"
 DB_FILE    = "trained/arcface_db.pkl"
 RECOGNITION_THRESHOLD = 0.3
 
