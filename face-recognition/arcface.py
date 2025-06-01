@@ -46,13 +46,25 @@ class FaceRecognizerArcFace:
         return arr
 
     def extract_features(self, face_img):
-        blob = self.preprocess(face_img)  # se supone (1,3,112,112), float32
+        blob = self.preprocess(face_img)           # → (1,3,112,112) float32
+        blob = np.ascontiguousarray(blob)          # FORZAR contigüidad
 
-        # —> IMPRIME PARA COMPROBAR FORMA Y TIPO:
         print("DEBUG extract_features → blob.shape:", blob.shape, ", blob.dtype:", blob.dtype)
-        # <—
+        # Si ves (1, 3, 112, 112) float32, OK. Luego:
+        try:
+            outputs = self.session.run(None, {self.input_name: blob})
+        except Exception as e:
+            print("ERROR en session.run con ROI real:", e)
+            # Para aislarlo, prueba con un blob limpio:
+            dummy = np.zeros_like(blob, dtype=np.float32)
+            try:
+                _ = self.session.run(None, {self.input_name: dummy})
+                print("DEBUG: el dummy funciona, el problema está en los datos reales del ROI.")
+            except Exception as e2:
+                print("ERROR dummy tras fallo con ROI:", e2)
+            # Salir o retornar un embedding por defecto:
+            return np.zeros(512, dtype=np.float32)
 
-        outputs = self.session.run(None, {self.input_name: blob})
         embedding = outputs[0].reshape(-1)
         norm = np.linalg.norm(embedding)
         if norm > 0:
