@@ -38,7 +38,7 @@ class FaceRecognizerArcFaceTorch:
         Preprocesado sin torchvision:
          1) Asegurar que roi es un arreglo uint8 BGR.
          2) Convertir BGR → RGB.
-         3) Redimensionar a 112×112.
+         3) Redimensionar a 112x112.
          4) Convertir a float32 en rango [-1, +1]: ((img/255) - 0.5) / 0.5
          5) Reordenar canales a (C, H, W) y añadir batch.
         """
