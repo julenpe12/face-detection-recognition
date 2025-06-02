@@ -5,7 +5,7 @@ import os
 import onnxruntime as ort
 from pathlib import Path
 
-# Configuration: capture resolution (w × h)
+# Configuration: capture resolution (w x h)
 CAPTURE_WIDTH = 640
 CAPTURE_HEIGHT = 480
 
@@ -110,7 +110,7 @@ class FaceRecognizerArcFaceTorch:
         self.threshold = threshold
 
     def preprocess(self, roi):
-        # Convert BGR → RGB, resize to 112×112, normalize to [-1,+1]
+        # Convert BGR - RGB, resize to 112x112, normalize to [-1,+1]
         rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
         resized = cv2.resize(rgb, (112, 112), interpolation=cv2.INTER_LINEAR)
         arr = resized.astype(np.float32) / 255.0
