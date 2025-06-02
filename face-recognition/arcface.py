@@ -11,7 +11,7 @@ THRESHOLD    = 0.3                   # Umbral de distancia (coseno)
 class FaceDetectorHaar:
     def __init__(self, cascade_path=CASCADE_PATH, scaleFactor=1.1, minNeighbors=5):
         if not os.path.exists(cascade_path):
-            raise ValueError(f"Cascade file not found: {cascade_path}")
+            raise ValueError("Cascade file not found o corrupto: {}".format(cascade_path))
         self.cascade = cv2.CascadeClassifier(cascade_path)
         self.scaleFactor = scaleFactor
         self.minNeighbors = minNeighbors
@@ -28,7 +28,7 @@ class FaceDetectorHaar:
 class FaceRecognizerArcFace:
     def __init__(self, model_path=MODEL_PATH, threshold=THRESHOLD):
         if not os.path.exists(model_path):
-            raise ValueError(f"ONNX model not found: {model_path}")
+            raise ValueError("ONNX model not found: {}".format(model_path))
         # Crear sesión ONNX Runtime
         self.session = ort.InferenceSession(model_path, providers=['CUDAExecutionProvider','CPUExecutionProvider'])
         self.input_name = self.session.get_inputs()[0].name
@@ -122,14 +122,14 @@ def main():
             count += 1
             cv2.putText(
                 frame,
-                f"Training {current_label}: {count}/{target_samples}",
+                "Training '{}': {}/{}".format(current_label, count, target_samples),
                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2
             )
             cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
             if count >= target_samples:
                 training_mode = False
                 count = 0
-                print(f"Entrenamiento completado para '{current_label}'.")
+                print("Training completed for '{}'.".format(current_label))
 
         else:
             if not recognizer.features_database:
@@ -149,7 +149,7 @@ def main():
                 color = (0, 255, 0) if dist < recognizer.threshold else (0, 0, 255)
                 cv2.putText(
                     frame,
-                    f"{lbl} ({dist:.2f})",
+                    "{} ({:.2f})".format(label, dist),
                     (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2
                 )
                 cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
@@ -163,7 +163,7 @@ def main():
             if current_label:
                 training_mode = True
                 count = 0
-                print(f"Modo entrenamiento: '{current_label}'")
+                print("Modo entrenamiento: '{}'".format(current_label))
 
     cap.release()
     cv2.destroyAllWindows()
