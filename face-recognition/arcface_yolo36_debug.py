@@ -4,14 +4,21 @@ import time
 import collections
 import psutil
 import GPUtil
-import onnxruntime as ort
 import torch
-import torchvision.transforms as transforms
-from PIL import Image
+import os
+import onnxruntime as ort
 from pathlib import Path
 
-# YOLO (idénticas funciones que arriba)
-MODEL_PATH = "models/yolov8n-face.onnx"; INPUT_SIZE=640; CONF_THRES=0.25; NMS_THRES=0.45; DEVICE_ID=0
+# Configuration: capture resolution (w × h)
+CAPTURE_WIDTH = 640
+CAPTURE_HEIGHT = 480
+
+# YOLO configuration (unchanged)
+MODEL_PATH = "models/yolov8n-face.onnx"
+INPUT_SIZE = 640
+CONF_THRES = 0.25
+NMS_THRES = 0.45
+DEVICE_ID = 0
 
 def letterbox(img, new_size=INPUT_SIZE, color=(114, 114, 114)):
     h, w = img.shape[:2]
@@ -21,9 +28,8 @@ def letterbox(img, new_size=INPUT_SIZE, color=(114, 114, 114)):
     canvas = np.full((new_size, new_size, 3), color, dtype=np.uint8)
     top = (new_size - nh) // 2
     left = (new_size - nw) // 2
-    canvas[top:top + nh, left:left + nw] = img_resized
+    canvas[top : top + nh, left : left + nw] = img_resized
     return canvas, scale, left, top
-
 
 def xywh2xyxy(x):
     y = np.copy(x)
@@ -33,15 +39,15 @@ def xywh2xyxy(x):
     y[..., 3] = x[..., 1] + x[..., 3] / 2
     return y
 
-
 def iou(box, boxes):
-    inter = (np.maximum(0, np.minimum(boxes[:, 2], box[2]) - np.maximum(boxes[:, 0], box[0])) *
-             np.maximum(0, np.minimum(boxes[:, 3], box[3]) - np.maximum(boxes[:, 1], box[1])))
+    inter = (
+        np.maximum(0, np.minimum(boxes[:, 2], box[2]) - np.maximum(boxes[:, 0], box[0]))
+        * np.maximum(0, np.minimum(boxes[:, 3], box[3]) - np.maximum(boxes[:, 1], box[1]))
+    )
     area_box = (box[2] - box[0]) * (box[3] - box[1])
     area_boxes = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
     union = area_box + area_boxes - inter + 1e-6
     return inter / union
-
 
 def non_max_suppression(boxes, scores, iou_thres=NMS_THRES):
     idxs = scores.argsort()[::-1]
@@ -55,13 +61,11 @@ def non_max_suppression(boxes, scores, iou_thres=NMS_THRES):
         idxs = idxs[1:][ious < iou_thres]
     return keep
 
-
 def preprocess_yolo(frame):
     img, scale, left, top = letterbox(frame)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     img = np.transpose(img, (2, 0, 1))[None]
     return img, scale, left, top
-
 
 def postprocess_yolo(pred, scale, left, top, orig_shape):
     pred = np.squeeze(pred).transpose(1, 0)
@@ -80,7 +84,6 @@ def postprocess_yolo(pred, scale, left, top, orig_shape):
     keep = non_max_suppression(boxes, scores)
     return [(boxes[i].astype(int), float(scores[i])) for i in keep]
 
-
 def get_execution_providers():
     pref = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     avail = ort.get_available_providers()
@@ -88,75 +91,209 @@ def get_execution_providers():
 
 class FaceDetectorYOLO:
     def __init__(self, model_path=MODEL_PATH):
-        if not Path(model_path).is_file(): raise FileNotFoundError(f"ONNX model not found: {model_path}")
+        if not Path(model_path).is_file():
+            raise FileNotFoundError("ONNX model not found: {}".format(model_path))
         self.sess = ort.InferenceSession(model_path, providers=get_execution_providers())
-        self.inp = self.sess.get_inputs()[0].name; self.outp = self.sess.get_outputs()[0].name
+        self.input_name = self.sess.get_inputs()[0].name
+        self.output_name = self.sess.get_outputs()[0].name
+
     def detect(self, frame):
-        img, sc, l, t0 = preprocess_yolo(frame)
-        pred = self.sess.run([self.outp], {self.inp: img})[0]
-        return postprocess_yolo(pred, sc, l, t0, frame.shape)
+        img, scale, left, top = preprocess_yolo(frame)
+        pred = self.sess.run([self.output_name], {self.input_name: img})[0]
+        return postprocess_yolo(pred, scale, left, top, frame.shape)
 
 class FaceRecognizerArcFaceTorch:
-    def __init__(self, path="models/arcface.pt",thresh=0.3):
-        self.device='cuda' if torch.cuda.is_available() else 'cpu'
-        self.model=torch.jit.load(path,map_location=self.device); self.model.eval()
-        self.features=[]; self.labels=[]; self.thresh=thresh
-        self.tf=transforms.Compose([transforms.Resize((112,112)),transforms.ToTensor(),transforms.Normalize([0.5]*3,[0.5]*3)])
-    def prep(self,roi):
-        img=Image.fromarray(cv2.cvtColor(roi,cv2.COLOR_BGR2RGB))
-        return self.tf(img).unsqueeze(0).to(self.device)
-    def ext(self,roi):
-        t=self.prep(roi)
-        with torch.no_grad(): v=self.model(t).flatten().cpu().numpy()
-        n=np.linalg.norm(v); return v/n if n>0 else v
-    def add(self,roi,label): self.features.append(self.ext(roi)); self.labels.append(label)
-    def recognize(self,roi):
-        if not self.features: return "Unknown",1.0
-        e=self.ext(roi);d=1-np.dot(self.features,e);i=np.argmin(d)
-        return self.labels[i],d[i]
+    def __init__(self, model_path="models/arcface.pt", threshold=0.3):
+        if not os.path.exists(model_path):
+            raise ValueError("TorchScript model not found: {}".format(model_path))
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = torch.jit.load(model_path, map_location=self.device)
+        self.model.eval()
+        self.features = []
+        self.labels = []
+        self.threshold = threshold
 
-if __name__=="__main__":
-    cap=cv2.VideoCapture(DEVICE_ID)
-    proc=psutil.Process();
-    buf_fps=collections.deque(maxlen=30); buf_cpu=collections.deque(maxlen=30);
-    buf_mem=collections.deque(maxlen=30); buf_gpu=collections.deque(maxlen=30);
-    prev=time.time(); count=0
+    def preprocess(self, roi):
+        rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+        resized = cv2.resize(rgb, (112, 112), interpolation=cv2.INTER_LINEAR)
+        arr = resized.astype(np.float32) / 255.0
+        arr = (arr - 0.5) / 0.5
+        arr = np.transpose(arr, (2, 0, 1))
+        tensor = torch.from_numpy(arr).unsqueeze(0).to(self.device)
+        return tensor
 
-    det=FaceDetectorYOLO(); rec=FaceRecognizerArcFaceTorch()
-    mode=False; cnt=0; lbl=None; tgt=250
+    def extract(self, roi):
+        inp = self.preprocess(roi)
+        with torch.no_grad():
+            emb = self.model(inp)
+            emb = emb.view(-1).cpu().numpy()
+        norm = np.linalg.norm(emb)
+        if norm > 0:
+            return emb / norm
+        return emb
 
-    print("[T] Train | [q] Quit")
+    def add_sample(self, roi, label):
+        embedding = self.extract(roi)
+        self.features.append(embedding)
+        self.labels.append(label)
+
+    def recognize(self, roi):
+        if not self.features:
+            return "Unknown", 1.0
+        emb = self.extract(roi)
+        db = np.vstack(self.features)
+        sims = np.dot(db, emb)
+        dists = 1.0 - sims
+        idx = np.argmin(dists)
+        return self.labels[idx], float(dists[idx])
+
+if __name__ == "__main__":
+    cap = cv2.VideoCapture(DEVICE_ID)
+    if not cap.isOpened():
+        raise RuntimeError("Could not open camera")
+
+    # Set capture resolution
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
+
+    proc = psutil.Process()
+    buf_fps = collections.deque(maxlen=30)
+    buf_cpu = collections.deque(maxlen=30)
+    buf_mem = collections.deque(maxlen=30)
+    buf_gpu = collections.deque(maxlen=30)
+    prev = time.time()
+    frame_count = 0
+
+    detector = FaceDetectorYOLO()
+    recognizer = FaceRecognizerArcFaceTorch(model_path="models/arcface.pt", threshold=0.3)
+
+    training_mode = False
+    target_samples = 250
+    sample_count = 0
+    current_label = None
+
+    print("[T] Train  |  [Q] Quit")
+
     while True:
-        ret,frame=cap.read();
-        if not ret: break
-        now=time.time(); fps=1/(now-prev); prev=now; buf_fps.append(fps)
-        cpu=proc.cpu_percent()/psutil.cpu_count(); buf_cpu.append(cpu)
-        mem=proc.memory_info().rss/1024/1024; buf_mem.append(mem)
-        count+=1
-        if count%10==0:
-            gpus=GPUtil.getGPUs(); load=gpus[0].load*100 if gpus else 0; buf_gpu.append(load)
-        avg_fps=sum(buf_fps)/len(buf_fps); avg_cpu=sum(buf_cpu)/len(buf_cpu)
-        avg_mem=sum(buf_mem)/len(buf_mem); avg_gpu=sum(buf_gpu)/len(buf_gpu)
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-        faces=det.detect(frame)
-        if mode and faces:
-            (x1,y1,x2,y2),_ = faces[0]
-            roi=frame[y1:y2,x1:x2]; rec.add(roi,lbl); cnt+=1
-            if cnt>=tgt: mode=False; cnt=0; print(f"Done '{lbl}'")
+        # System metrics
+        now = time.time()
+        fps = 1.0 / (now - prev) if now > prev else 0.0
+        prev = now
+        buf_fps.append(fps)
+        cpu = proc.cpu_percent() / psutil.cpu_count()
+        buf_cpu.append(cpu)
+        mem = proc.memory_info().rss / (1024 * 1024)
+        buf_mem.append(mem)
+        frame_count += 1
+        if frame_count % 10 == 0:
+            gpus = GPUtil.getGPUs()
+            load = gpus[0].load * 100.0 if gpus else 0.0
+            buf_gpu.append(load)
+
+        avg_fps = sum(buf_fps) / len(buf_fps) if buf_fps else 0.0
+        avg_cpu = sum(buf_cpu) / len(buf_cpu) if buf_cpu else 0.0
+        avg_mem = sum(buf_mem) / len(buf_mem) if buf_mem else 0.0
+        avg_gpu = sum(buf_gpu) / len(buf_gpu) if buf_gpu else 0.0
+
+        faces = detector.detect(frame)
+
+        if training_mode and faces:
+            (x1, y1, x2, y2), _ = faces[0]
+            if x1 < 0 or y1 < 0 or x2 > frame.shape[1] or y2 > frame.shape[0]:
+                continue
+            roi = frame[y1 : y2, x1 : x2]
+            if roi.size == 0:
+                continue
+            recognizer.add_sample(roi, current_label)
+            sample_count += 1
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            cv2.putText(
+                frame,
+                "Train '{}': {}/{}".format(current_label, sample_count, target_samples),
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (255, 0, 0),
+                2,
+            )
+            if sample_count >= target_samples:
+                training_mode = False
+                sample_count = 0
+                print("Training completed for '{}'".format(current_label))
         else:
-            for (x1,y1,x2,y2),_ in faces:
-                roi=frame[y1:y2,x1:x2]; l,d=rec.recognize(roi)
-                c=(0,255,0) if d<rec.thresh else (0,0,255)
-                cv2.rectangle(frame,(x1,y1),(x2,y2),c,2)
-                cv2.putText(frame,f"{l} ({d:.2f})",(x1,y1-10),cv2.FONT_HERSHEY_SIMPLEX,0.8,c,2)
+            for (x1, y1, x2, y2), score in faces:
+                if x1 < 0 or y1 < 0 or x2 > frame.shape[1] or y2 > frame.shape[0]:
+                    continue
+                roi = frame[y1 : y2, x1 : x2]
+                if roi.size == 0:
+                    continue
+                label, dist = recognizer.recognize(roi)
+                if dist < recognizer.threshold:
+                    color = (0, 255, 0)
+                else:
+                    color = (0, 0, 255)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(
+                    frame,
+                    "{} ({:.2f})".format(label, dist),
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    color,
+                    2,
+                )
 
-        cv2.putText(frame,f"FPS:{int(avg_fps)}",(10,30),cv2.FONT_HERSHEY_SIMPLEX,0.8,(100,255,0),2)
-        cv2.putText(frame,f"CPU:{avg_cpu:.1f}%",(10,60),cv2.FONT_HERSHEY_SIMPLEX,0.8,(100,255,0),2)
-        cv2.putText(frame,f"Mem:{avg_mem:.1f}MB",(10,90),cv2.FONT_HERSHEY_SIMPLEX,0.8,(100,255,0),2)
-        cv2.putText(frame,f"GPU:{avg_gpu:.1f}%",(10,120),cv2.FONT_HERSHEY_SIMPLEX,0.8,(100,255,0),2)
+        # Overlay metrics
+        cv2.putText(
+            frame,
+            "FPS: {}".format(int(avg_fps)),
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (100, 255, 0),
+            2,
+        )
+        cv2.putText(
+            frame,
+            "CPU: {:.1f}%".format(avg_cpu),
+            (10, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (100, 255, 0),
+            2,
+        )
+        cv2.putText(
+            frame,
+            "Mem: {:.1f}MB".format(avg_mem),
+            (10, 90),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (100, 255, 0),
+            2,
+        )
+        cv2.putText(
+            frame,
+            "GPU: {:.1f}%".format(avg_gpu),
+            (10, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (100, 255, 0),
+            2,
+        )
 
         cv2.imshow("Feed YOLO Metrics", frame)
-        k=cv2.waitKey(1)&0xFF
-        if k==ord('q'): break
-        if k==ord('t'): lbl=input("Label: ").strip(); mode=bool(lbl)
-    cap.release(); cv2.destroyAllWindows()
+        k = cv2.waitKey(1) & 0xFF
+        if k == ord("q"):
+            break
+        if k == ord("t"):
+            lbl = input("Label: ").strip()
+            if lbl:
+                current_label = lbl
+                training_mode = True
+
+    cap.release()
+    cv2.destroyAllWindows()
