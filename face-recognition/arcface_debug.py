@@ -24,6 +24,14 @@ class FaceRecognizerArcFaceTorch:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = torch.jit.load(path, map_location=self.device)
         self.model.eval()
+        
+        # Añade esta línea para verificar dónde quedaron los parámetros
+        try:
+            first_param = next(self.model.parameters())
+            print(">>> Model parameters located on:", first_param.device)
+        except StopIteration:
+            print(">>> Warning: Model has no parameters to check device.")
+            
         self.features = []
         self.labels = []
         self.thresh = thresh
@@ -45,6 +53,7 @@ class FaceRecognizerArcFaceTorch:
 
     def extract(self, roi):
         inp = self.preprocess(roi)
+        print(">>> Input tensor device:", inp.device, " shape:", inp.shape)
         with torch.no_grad():
             emb = self.model(inp)
             emb = emb.view(-1).cpu().numpy()
