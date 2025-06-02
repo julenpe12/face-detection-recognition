@@ -4,6 +4,10 @@ import torch
 import pickle
 import os
 
+# Configuration: adjust capture resolution to match model input scaling requirements
+CAPTURE_WIDTH = 640
+CAPTURE_HEIGHT = 480
+
 # Face detector using Haar Cascade
 class FaceDetectorHaar:
     def __init__(self, cascade_path="/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"):
@@ -16,7 +20,7 @@ class FaceDetectorHaar:
         faces = self.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
         return faces
 
-# Face recognizer using a TorchScript ArcFace model (no torchvision or PIL)
+# Face recognizer using a TorchScript ArcFace model (no torchvision, no PIL)
 class FaceRecognizerArcFaceTorch:
     def __init__(self, model_path="models/arcface.pt", threshold=0.3):
         if not os.path.exists(model_path):
@@ -62,9 +66,9 @@ class FaceRecognizerArcFaceTorch:
         if not self.features:
             return "Unknown", 1.0
         emb = self.extract(roi)
-        db = np.vstack(self.features)
-        sims = np.dot(db, emb)
-        dists = 1.0 - sims
+        db = np.vstack(self.features)            # shape: (N, embedding_size)
+        sims = np.dot(db, emb)                   # shape: (N,)
+        dists = 1.0 - sims                        # cosine distance
         idx = np.argmin(dists)
         return self.labels[idx], float(dists[idx])
 
@@ -91,6 +95,10 @@ def main():
     if not cap.isOpened():
         print("Error: could not open camera.")
         return
+
+    # Set capture resolution from configuration
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
 
     detector = FaceDetectorHaar()
     recognizer = FaceRecognizerArcFaceTorch(model_path="models/arcface.pt", threshold=0.3)

@@ -3,6 +3,10 @@ import numpy as np
 import torch
 import os
 
+# Configuration: adjust capture resolution to match model input scaling requirements
+CAPTURE_WIDTH = 640
+CAPTURE_HEIGHT = 480
+
 # Face detector using Haar Cascade
 class FaceDetectorHaar:
     def __init__(self, cascade_path="/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"):
@@ -15,7 +19,7 @@ class FaceDetectorHaar:
         faces = self.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
         return faces
 
-# Face recognizer using a TorchScript ArcFace model (no torchvision or PIL)
+# Face recognizer using a TorchScript ArcFace model (no torchvision, no PIL)
 class FaceRecognizerArcFaceTorch:
     def __init__(self, model_path="models/arcface.pt", threshold=0.3):
         if not os.path.exists(model_path):
@@ -30,7 +34,7 @@ class FaceRecognizerArcFaceTorch:
     def preprocess(self, roi):
         # Convert BGR to RGB
         rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-        # Resize to 112×112
+        # Resize to 112×112 (model expects this)
         resized = cv2.resize(rgb, (112, 112), interpolation=cv2.INTER_LINEAR)
         # Convert to float32 in [0,1]
         arr = resized.astype(np.float32) / 255.0
@@ -72,6 +76,10 @@ def main():
     if not cap.isOpened():
         print("Error: could not open camera.")
         return
+
+    # Set capture resolution from configuration
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
 
     detector = FaceDetectorHaar()
     recognizer = FaceRecognizerArcFaceTorch(model_path="models/arcface.pt", threshold=0.3)
