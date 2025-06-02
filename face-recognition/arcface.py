@@ -3,15 +3,15 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-# Ruta al Haar Cascade (descargar y colocar junto a este script)
+# Path to Haar Cascade (download and place alongside this script)
 CASCADE_PATH = "models/haarcascade_frontalface_default.xml"
-MODEL_PATH   = "models/arcfaceresnet100-8.onnx"   # Ruta al modelo ONNX de ArcFace
-THRESHOLD    = 0.3                   # Umbral de distancia (coseno)
+MODEL_PATH   = "models/arcfaceresnet100-8.onnx"   # Path to ArcFace ONNX model
+THRESHOLD    = 0.3                                # Cosine distance threshold
 
 class FaceDetectorHaar:
     def __init__(self, cascade_path=CASCADE_PATH, scaleFactor=1.1, minNeighbors=5):
         if not os.path.exists(cascade_path):
-            raise ValueError("Cascade file not found o corrupto: {}".format(cascade_path))
+            raise ValueError("Cascade file not found or corrupt: {}".format(cascade_path))
         self.cascade = cv2.CascadeClassifier(cascade_path)
         self.scaleFactor = scaleFactor
         self.minNeighbors = minNeighbors
@@ -29,40 +29,38 @@ class FaceRecognizerArcFace:
     def __init__(self, model_path=MODEL_PATH, threshold=THRESHOLD):
         if not os.path.exists(model_path):
             raise ValueError("ONNX model not found: {}".format(model_path))
-        # Crear sesión ONNX Runtime
-        self.session = ort.InferenceSession(model_path, providers=['CUDAExecutionProvider','CPUExecutionProvider'])
+        self.session = ort.InferenceSession(
+            model_path,
+            providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+        )
         self.input_name = self.session.get_inputs()[0].name
-        self.features_database = []   # Lista de embeddings normalizados
-        self.labels = []              # Etiquetas correspondientes
+        self.features_database = []   # List of normalized embeddings
+        self.labels = []              # Corresponding labels
         self.threshold = threshold
 
     def preprocess(self, face_img):
-        # Convierte BGR->RGB, redimensiona a 112×112, normaliza al rango [0,1] y reordena a (1,3,112,112)
+        # Convert BGR→RGB, resize to 112×112, normalize to [0,1], reorder to (1,3,112,112)
         face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-        resized = cv2.resize(face_rgb, (112, 112))
+        resized = cv2.resize(face_rgb, (112, 112), interpolation=cv2.INTER_LINEAR)
         arr = resized.astype(np.float32) / 255.0
-        # Transponer a (3,112,112) y añadir dimensión batch
         arr = np.transpose(arr, (2, 0, 1))[np.newaxis, ...]
         return arr
 
     def extract_features(self, face_img):
-        blob = self.preprocess(face_img)           # → (1,3,112,112) float32
-        blob = np.ascontiguousarray(blob)          # FORZAR contigüidad
+        blob = self.preprocess(face_img)               # → (1,3,112,112) float32
+        blob = np.ascontiguousarray(blob)              # Ensure contiguity
 
-        print("DEBUG extract_features → blob.shape:", blob.shape, ", blob.dtype:", blob.dtype)
-        # Si ves (1, 3, 112, 112) float32, OK. Luego:
+        print("DEBUG extract_features → blob.shape: {}, blob.dtype: {}".format(blob.shape, blob.dtype))
         try:
             outputs = self.session.run(None, {self.input_name: blob})
         except Exception as e:
-            print("ERROR en session.run con ROI real:", e)
-            # Para aislarlo, prueba con un blob limpio:
+            print("ERROR in session.run with real ROI:", e)
             dummy = np.zeros_like(blob, dtype=np.float32)
             try:
                 _ = self.session.run(None, {self.input_name: dummy})
-                print("DEBUG: el dummy funciona, el problema está en los datos reales del ROI.")
+                print("DEBUG: dummy works, problem is with real ROI data.")
             except Exception as e2:
-                print("ERROR dummy tras fallo con ROI:", e2)
-            # Salir o retornar un embedding por defecto:
+                print("ERROR dummy after ROI failure:", e2)
             return np.zeros(512, dtype=np.float32)
 
         embedding = outputs[0].reshape(-1)
@@ -80,18 +78,21 @@ class FaceRecognizerArcFace:
         emb = self.extract_features(face_img)
         if not self.features_database:
             return "Unknown", 1.0
-        # Calcular similitud por producto punto (vectores normalizados)
-        db = np.vstack(self.features_database)            # shape: (N, embedding_size)
-        sims = np.dot(db, emb)                            # shape: (N,)
-        dists = 1.0 - sims                                 # distancia coseno
+        db = np.vstack(self.features_database)         # shape: (N, embedding_size)
+        sims = np.dot(db, emb)                         # shape: (N,)
+        dists = 1.0 - sims                             # cosine distance
         idx = np.argmin(dists)
         return self.labels[idx], float(dists[idx])
 
 def main():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("Error: no se pudo abrir la cámara.")
+        print("Error: could not open camera.")
         return
+
+    # Set capture resolution to 640×480 for better performance
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     detector = FaceDetectorHaar()
     recognizer = FaceRecognizerArcFace()
@@ -101,7 +102,7 @@ def main():
     current_label = None
     count = 0
 
-    print("Presione 'T' para iniciar entrenamiento, 'q' para salir.")
+    print("Press 'T' to start training mode with a new label. Press 'q' to quit.")
 
     while True:
         ret, frame = cap.read()
@@ -112,8 +113,7 @@ def main():
 
         if training_mode and len(faces) > 0:
             x, y, w, h = faces[0]
-            # Validar límites
-            if x < 0 or y < 0 or x+w > frame.shape[1] or y+h > frame.shape[0]:
+            if x < 0 or y < 0 or x + w > frame.shape[1] or y + h > frame.shape[0]:
                 continue
             roi = frame[y:y+h, x:x+w]
             if roi.size == 0:
@@ -135,12 +135,11 @@ def main():
             if not recognizer.features_database:
                 cv2.putText(
                     frame,
-                    "No hay datos de entrenamiento",
+                    "No training data",
                     (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2
                 )
             for (x, y, w, h) in faces:
-                # Validar límites
-                if x < 0 or y < 0 or x+w > frame.shape[1] or y+h > frame.shape[0]:
+                if x < 0 or y < 0 or x + w > frame.shape[1] or y + h > frame.shape[0]:
                     continue
                 roi = frame[y:y+h, x:x+w]
                 if roi.size == 0:
@@ -149,7 +148,7 @@ def main():
                 color = (0, 255, 0) if dist < recognizer.threshold else (0, 0, 255)
                 cv2.putText(
                     frame,
-                    "{} ({:.2f})".format(label, dist),
+                    "{} ({:.2f})".format(lbl, dist),
                     (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2
                 )
                 cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
@@ -159,11 +158,11 @@ def main():
         if key == ord('q'):
             break
         if key in (ord('T'), ord('t')) and not training_mode:
-            current_label = input("Etiqueta para entrenamiento: ").strip()
+            current_label = input("Enter label for training: ").strip()
             if current_label:
                 training_mode = True
                 count = 0
-                print("Modo entrenamiento: '{}'".format(current_label))
+                print("Training mode activated for label '{}'.".format(current_label))
 
     cap.release()
     cv2.destroyAllWindows()
