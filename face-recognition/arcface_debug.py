@@ -6,27 +6,22 @@ import psutil
 import GPUtil
 import torch
 
-# -------------------------------------------------------------------
-# Detector de caras con Haar Cascade
-# -------------------------------------------------------------------
+# Face detector using Haar cascade
 class FaceDetectorHaar:
     def __init__(self, cascade_path="/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"):
         self.cascade = cv2.CascadeClassifier(cascade_path)
         if self.cascade.empty():
-            raise ValueError("Cascade file not found o corrupto: {}".format(cascade_path))
+            raise ValueError("Cascade file not found or corrupt: {}".format(cascade_path))
 
     def detect(self, img):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         faces = self.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
         return faces
 
-# -------------------------------------------------------------------
-# Reconocedor ArcFace con PyTorch (sin torchvision ni PIL)
-# -------------------------------------------------------------------
+# Face recognizer using a TorchScript ArcFace model (no torchvision or PIL)
 class FaceRecognizerArcFaceTorch:
     def __init__(self, path="models/arcface.pt", thresh=0.3):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        # Carga modelo TorchScript (por ejemplo, torch.jit.save)
         self.model = torch.jit.load(path, map_location=self.device)
         self.model.eval()
         self.features = []
@@ -34,43 +29,29 @@ class FaceRecognizerArcFaceTorch:
         self.thresh = thresh
 
     def preprocess(self, roi):
-        """
-        Preprocesado sin torchvision:
-         1) Asegurar que roi es un arreglo uint8 BGR.
-         2) Convertir BGR → RGB.
-         3) Redimensionar a 112x112.
-         4) Convertir a float32 en rango [-1, +1]: ((img/255) - 0.5) / 0.5
-         5) Reordenar canales a (C, H, W) y añadir batch.
-        """
-        # 1) Convertir BGR → RGB
+        # Convert BGR to RGB
         rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-        # 2) Redimensionar a 112×112
+        # Resize to 112x112
         resized = cv2.resize(rgb, (112, 112), interpolation=cv2.INTER_LINEAR)
-        # 3) Convertir a float32 y normalizar a [-1, +1]
-        #    Primero pasamos a [0,1]:
+        # Convert to float32 in range [0,1]
         arr = resized.astype(np.float32) / 255.0
-        #    Luego (x - 0.5) / 0.5 → [-1, +1]
+        # Normalize to [-1, +1]
         arr = (arr - 0.5) / 0.5
-        # 4) Reordenar a (C, H, W)
-        #    arr tiene forma (112,112,3), canales al final
+        # Rearrange to (C, H, W)
         arr = np.transpose(arr, (2, 0, 1))
-        # 5) Añadir dimensión de batch → (1, C, H, W)
+        # Add batch dimension (1, C, H, W)
         tensor = torch.from_numpy(arr).unsqueeze(0).to(self.device)
         return tensor
 
     def extract(self, roi):
-        """
-        Dado un ROI en formato BGR uint8, retorna el embedding normalizado (1D numpy array).
-        """
-        inp = self.preprocess(roi)  # → Tensor (1, 3, 112, 112)
+        inp = self.preprocess(roi)
         with torch.no_grad():
-            emb = self.model(inp)               # Supone que la red devuelve (1, 512) por ejemplo
-            emb = emb.view(-1).cpu().numpy()    # Vector 1D en CPU
+            emb = self.model(inp)
+            emb = emb.view(-1).cpu().numpy()
         norm = np.linalg.norm(emb)
         if norm > 0:
             return emb / norm
-        else:
-            return emb
+        return emb
 
     def add(self, roi, label):
         embedding = self.extract(roi)
@@ -81,20 +62,21 @@ class FaceRecognizerArcFaceTorch:
         if not self.features:
             return "Unknown", 1.0
         emb = self.extract(roi)
-        db = np.vstack(self.features)             # (N, embedding_size)
-        sims = np.dot(db, emb)                    # (N,)
-        dists = 1.0 - sims                         # distancia coseno
+        db = np.vstack(self.features)
+        sims = np.dot(db, emb)
+        dists = 1.0 - sims
         idx = np.argmin(dists)
         return self.labels[idx], float(dists[idx])
 
-# -------------------------------------------------------------------
-# Bucle principal: captura de cámara, métricas y reconocimiento
-# -------------------------------------------------------------------
 if __name__ == "__main__":
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("Error: no se pudo abrir la cámara.")
+        print("Error: could not open camera.")
         exit(1)
+
+    # Set capture resolution to 640x480 for better performance
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     proc = psutil.Process()
     buf_fps = collections.deque(maxlen=30)
@@ -112,14 +94,14 @@ if __name__ == "__main__":
     current_label = None
     count = 0
 
-    print("[T] Entrenar | [Q] Salir")
+    print("[T] Train | [Q] Quit")
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        # — Métricas de sistema —
+        # Calculate system metrics
         now = time.time()
         if now > prev_time:
             fps = 1.0 / (now - prev_time)
@@ -129,7 +111,7 @@ if __name__ == "__main__":
         buf_fps.append(fps)
         cpu = proc.cpu_percent() / psutil.cpu_count()
         buf_cpu.append(cpu)
-        mem = proc.memory_info().rss / (1024 * 1024)  # MB
+        mem = proc.memory_info().rss / (1024 * 1024)
         buf_mem.append(mem)
         frame_count += 1
         if frame_count % 10 == 0:
@@ -140,29 +122,15 @@ if __name__ == "__main__":
                 load = 0.0
             buf_gpu.append(load)
 
-        if buf_fps:
-            avg_fps = sum(buf_fps) / len(buf_fps)
-        else:
-            avg_fps = 0.0
-        if buf_cpu:
-            avg_cpu = sum(buf_cpu) / len(buf_cpu)
-        else:
-            avg_cpu = 0.0
-        if buf_mem:
-            avg_mem = sum(buf_mem) / len(buf_mem)
-        else:
-            avg_mem = 0.0
-        if buf_gpu:
-            avg_gpu = sum(buf_gpu) / len(buf_gpu)
-        else:
-            avg_gpu = 0.0
+        avg_fps = sum(buf_fps) / len(buf_fps) if buf_fps else 0.0
+        avg_cpu = sum(buf_cpu) / len(buf_cpu) if buf_cpu else 0.0
+        avg_mem = sum(buf_mem) / len(buf_mem) if buf_mem else 0.0
+        avg_gpu = sum(buf_gpu) / len(buf_gpu) if buf_gpu else 0.0
 
-        # — Detección de caras —
         faces = det.detect(frame)
 
         if training_mode and len(faces) > 0:
             x, y, w, h = faces[0]
-            # Validar límites
             if x < 0 or y < 0 or x + w > frame.shape[1] or y + h > frame.shape[0]:
                 continue
             roi = frame[y : y + h, x : x + w]
@@ -172,7 +140,7 @@ if __name__ == "__main__":
             count += 1
             cv2.putText(
                 frame,
-                "Entrenando '{}': {}/{}".format(current_label, count, target_samples),
+                "Training '{}': {}/{}".format(current_label, count, target_samples),
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1,
@@ -183,13 +151,13 @@ if __name__ == "__main__":
             if count >= target_samples:
                 training_mode = False
                 count = 0
-                print("Entrenamiento completado para '{}'.".format(current_label))
+                print("Training completed for '{}'.".format(current_label))
 
         else:
             if not rec.features:
                 cv2.putText(
                     frame,
-                    "No hay datos de entrenamiento",
+                    "No training data",
                     (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     1,
@@ -197,7 +165,6 @@ if __name__ == "__main__":
                     2,
                 )
             for (x, y, w, h) in faces:
-                # Validar límites
                 if x < 0 or y < 0 or x + w > frame.shape[1] or y + h > frame.shape[0]:
                     continue
                 roi = frame[y : y + h, x : x + w]
@@ -219,7 +186,7 @@ if __name__ == "__main__":
                 )
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
 
-        # — Overlay de métricas —        
+        # Overlay system metrics
         cv2.putText(
             frame,
             "FPS: {}".format(int(avg_fps)),
@@ -262,11 +229,11 @@ if __name__ == "__main__":
         if key == ord("q"):
             break
         if key == ord("t"):
-            current_label = input("Etiqueta: ").strip()
+            current_label = input("Label: ").strip()
             if current_label:
                 training_mode = True
                 count = 0
-                print("Modo entrenamiento: '{}'".format(current_label))
+                print("Training mode: '{}'".format(current_label))
 
     cap.release()
     cv2.destroyAllWindows()
