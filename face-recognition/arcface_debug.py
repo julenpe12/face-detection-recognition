@@ -10,10 +10,10 @@ import torch
 # Detector de caras con Haar Cascade
 # -------------------------------------------------------------------
 class FaceDetectorHaar:
-    def __init__(self, cascade_path="models/haarcascade_frontalface_default.xml"):
+    def __init__(self, cascade_path="/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"):
         self.cascade = cv2.CascadeClassifier(cascade_path)
         if self.cascade.empty():
-            raise ValueError(f"Cascade file not found o corrupto: {cascade_path}")
+            raise ValueError("Cascade file not found o corrupto: {}".format(cascade_path))
 
     def detect(self, img):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -67,7 +67,10 @@ class FaceRecognizerArcFaceTorch:
             emb = self.model(inp)               # Supone que la red devuelve (1, 512) por ejemplo
             emb = emb.view(-1).cpu().numpy()    # Vector 1D en CPU
         norm = np.linalg.norm(emb)
-        return emb / norm if norm > 0 else emb
+        if norm > 0:
+            return emb / norm
+        else:
+            return emb
 
     def add(self, roi, label):
         embedding = self.extract(roi)
@@ -118,7 +121,10 @@ if __name__ == "__main__":
 
         # — Métricas de sistema —
         now = time.time()
-        fps = 1.0 / (now - prev_time) if now > prev_time else 0.0
+        if now > prev_time:
+            fps = 1.0 / (now - prev_time)
+        else:
+            fps = 0.0
         prev_time = now
         buf_fps.append(fps)
         cpu = proc.cpu_percent() / psutil.cpu_count()
@@ -128,13 +134,28 @@ if __name__ == "__main__":
         frame_count += 1
         if frame_count % 10 == 0:
             gpus = GPUtil.getGPUs()
-            load = gpus[0].load * 100.0 if gpus else 0.0
+            if gpus:
+                load = gpus[0].load * 100.0
+            else:
+                load = 0.0
             buf_gpu.append(load)
 
-        avg_fps = sum(buf_fps) / len(buf_fps) if buf_fps else 0.0
-        avg_cpu = sum(buf_cpu) / len(buf_cpu) if buf_cpu else 0.0
-        avg_mem = sum(buf_mem) / len(buf_mem) if buf_mem else 0.0
-        avg_gpu = sum(buf_gpu) / len(buf_gpu) if buf_gpu else 0.0
+        if buf_fps:
+            avg_fps = sum(buf_fps) / len(buf_fps)
+        else:
+            avg_fps = 0.0
+        if buf_cpu:
+            avg_cpu = sum(buf_cpu) / len(buf_cpu)
+        else:
+            avg_cpu = 0.0
+        if buf_mem:
+            avg_mem = sum(buf_mem) / len(buf_mem)
+        else:
+            avg_mem = 0.0
+        if buf_gpu:
+            avg_gpu = sum(buf_gpu) / len(buf_gpu)
+        else:
+            avg_gpu = 0.0
 
         # — Detección de caras —
         faces = det.detect(frame)
@@ -151,7 +172,7 @@ if __name__ == "__main__":
             count += 1
             cv2.putText(
                 frame,
-                f"Entrenando '{current_label}': {count}/{target_samples}",
+                "Entrenando '{}': {}/{}".format(current_label, count, target_samples),
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 1,
@@ -162,7 +183,7 @@ if __name__ == "__main__":
             if count >= target_samples:
                 training_mode = False
                 count = 0
-                print(f"Entrenamiento completado para '{current_label}'.")
+                print("Entrenamiento completado para '{}'.".format(current_label))
 
         else:
             if not rec.features:
@@ -183,10 +204,13 @@ if __name__ == "__main__":
                 if roi.size == 0:
                     continue
                 label, dist = rec.recognize(roi)
-                color = (0, 255, 0) if dist < rec.thresh else (0, 0, 255)
+                if dist < rec.thresh:
+                    color = (0, 255, 0)
+                else:
+                    color = (0, 0, 255)
                 cv2.putText(
                     frame,
-                    f"{label} ({dist:.2f})",
+                    "{} ({:.2f})".format(label, dist),
                     (x, y - 10),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.8,
@@ -198,7 +222,7 @@ if __name__ == "__main__":
         # — Overlay de métricas —        
         cv2.putText(
             frame,
-            f"FPS: {int(avg_fps)}",
+            "FPS: {}".format(int(avg_fps)),
             (10, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
@@ -207,7 +231,7 @@ if __name__ == "__main__":
         )
         cv2.putText(
             frame,
-            f"CPU: {avg_cpu:.1f}%",
+            "CPU: {:.1f}%".format(avg_cpu),
             (10, 60),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
@@ -216,7 +240,7 @@ if __name__ == "__main__":
         )
         cv2.putText(
             frame,
-            f"Mem: {avg_mem:.1f}MB",
+            "Mem: {:.1f}MB".format(avg_mem),
             (10, 90),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
@@ -225,7 +249,7 @@ if __name__ == "__main__":
         )
         cv2.putText(
             frame,
-            f"GPU: {avg_gpu:.1f}%",
+            "GPU: {:.1f}%".format(avg_gpu),
             (10, 120),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.8,
@@ -242,7 +266,7 @@ if __name__ == "__main__":
             if current_label:
                 training_mode = True
                 count = 0
-                print(f"Modo entrenamiento: '{current_label}'")
+                print("Modo entrenamiento: '{}'".format(current_label))
 
     cap.release()
     cv2.destroyAllWindows()
