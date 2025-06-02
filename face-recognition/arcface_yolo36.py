@@ -1,19 +1,20 @@
 import cv2
 import numpy as np
-import onnxruntime as ort
 import torch
-import torchvision.transforms as transforms
-from PIL import Image
+import os
+import onnxruntime as ort
+from pathlib import Path
 
-# Configuración YOLO
+# Configuration: capture resolution (w × h)
+CAPTURE_WIDTH = 640
+CAPTURE_HEIGHT = 480
+
+# YOLO configuration (unchanged)
 MODEL_PATH = "models/yolov8n-face.onnx"
 INPUT_SIZE = 640
 CONF_THRES = 0.25
 NMS_THRES = 0.45
 DEVICE_ID = 0
-
-# Funciones YOLO
-from pathlib import Path
 
 def letterbox(img, new_size=INPUT_SIZE, color=(114, 114, 114)):
     h, w = img.shape[:2]
@@ -23,9 +24,8 @@ def letterbox(img, new_size=INPUT_SIZE, color=(114, 114, 114)):
     canvas = np.full((new_size, new_size, 3), color, dtype=np.uint8)
     top = (new_size - nh) // 2
     left = (new_size - nw) // 2
-    canvas[top:top + nh, left:left + nw] = img_resized
+    canvas[top : top + nh, left : left + nw] = img_resized
     return canvas, scale, left, top
-
 
 def xywh2xyxy(x):
     y = np.copy(x)
@@ -35,15 +35,15 @@ def xywh2xyxy(x):
     y[..., 3] = x[..., 1] + x[..., 3] / 2
     return y
 
-
 def iou(box, boxes):
-    inter = (np.maximum(0, np.minimum(boxes[:, 2], box[2]) - np.maximum(boxes[:, 0], box[0])) *
-             np.maximum(0, np.minimum(boxes[:, 3], box[3]) - np.maximum(boxes[:, 1], box[1])))
+    inter = (
+        np.maximum(0, np.minimum(boxes[:, 2], box[2]) - np.maximum(boxes[:, 0], box[0]))
+        * np.maximum(0, np.minimum(boxes[:, 3], box[3]) - np.maximum(boxes[:, 1], box[1]))
+    )
     area_box = (box[2] - box[0]) * (box[3] - box[1])
     area_boxes = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
     union = area_box + area_boxes - inter + 1e-6
     return inter / union
-
 
 def non_max_suppression(boxes, scores, iou_thres=NMS_THRES):
     idxs = scores.argsort()[::-1]
@@ -57,13 +57,11 @@ def non_max_suppression(boxes, scores, iou_thres=NMS_THRES):
         idxs = idxs[1:][ious < iou_thres]
     return keep
 
-
 def preprocess_yolo(frame):
     img, scale, left, top = letterbox(frame)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     img = np.transpose(img, (2, 0, 1))[None]
     return img, scale, left, top
-
 
 def postprocess_yolo(pred, scale, left, top, orig_shape):
     pred = np.squeeze(pred).transpose(1, 0)
@@ -82,17 +80,15 @@ def postprocess_yolo(pred, scale, left, top, orig_shape):
     keep = non_max_suppression(boxes, scores)
     return [(boxes[i].astype(int), float(scores[i])) for i in keep]
 
-
 def get_execution_providers():
     pref = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     avail = ort.get_available_providers()
     return [p for p in pref if p in avail]
 
-# Detector usando YOLO ONNX
 class FaceDetectorYOLO:
     def __init__(self, model_path=MODEL_PATH):
         if not Path(model_path).is_file():
-            raise FileNotFoundError(f"Modelo ONNX no encontrado en {model_path}")
+            raise FileNotFoundError("ONNX model not found: {}".format(model_path))
         self.sess = ort.InferenceSession(model_path, providers=get_execution_providers())
         self.input_name = self.sess.get_inputs()[0].name
         self.output_name = self.sess.get_outputs()[0].name
@@ -102,90 +98,135 @@ class FaceDetectorYOLO:
         pred = self.sess.run([self.output_name], {self.input_name: img})[0]
         return postprocess_yolo(pred, scale, left, top, frame.shape)
 
-# Reconocedor ArcFace (igual que antes)
 class FaceRecognizerArcFaceTorch:
-    def __init__(self, model_path="models/arcface.pt", recognition_threshold=0.3, device='cuda'):
-        self.device = device if torch.cuda.is_available() else 'cpu'
+    def __init__(self, model_path="models/arcface.pt", threshold=0.3):
+        if not os.path.exists(model_path):
+            raise ValueError("TorchScript model not found: {}".format(model_path))
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = torch.jit.load(model_path, map_location=self.device)
-        self.model.to(self.device); self.model.eval()
-        self.features_database = []
+        self.model.eval()
+        self.features = []
         self.labels = []
-        self.recognition_threshold = recognition_threshold
-        self.transform = transforms.Compose([
-            transforms.Resize((112, 112)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5]*3, [0.5]*3)
-        ])
+        self.threshold = threshold
 
-    def preprocess(self, face_image):
-        pil = Image.fromarray(cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB))
-        return self.transform(pil).unsqueeze(0).to(self.device)
+    def preprocess(self, roi):
+        # Convert BGR → RGB, resize to 112×112, normalize to [-1,+1]
+        rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+        resized = cv2.resize(rgb, (112, 112), interpolation=cv2.INTER_LINEAR)
+        arr = resized.astype(np.float32) / 255.0
+        arr = (arr - 0.5) / 0.5
+        arr = np.transpose(arr, (2, 0, 1))  # (C, H, W)
+        tensor = torch.from_numpy(arr).unsqueeze(0).to(self.device)
+        return tensor
 
-    def extract_features(self, face_image):
-        tensor = self.preprocess(face_image)
-        with torch.no_grad(): emb = self.model(tensor).flatten().cpu().numpy()
+    def extract(self, roi):
+        inp = self.preprocess(roi)
+        with torch.no_grad():
+            emb = self.model(inp)
+            emb = emb.view(-1).cpu().numpy()
         norm = np.linalg.norm(emb)
-        return emb / norm if norm>0 else emb
+        if norm > 0:
+            return emb / norm
+        return emb
 
-    def add_training_sample(self, face_image, label):
-        emb = self.extract_features(face_image)
-        self.features_database.append(emb); self.labels.append(label)
+    def add_sample(self, roi, label):
+        embedding = self.extract(roi)
+        self.features.append(embedding)
+        self.labels.append(label)
 
-    def recognize(self, face_image):
-        emb = self.extract_features(face_image)
-        if not self.features_database:
+    def recognize(self, roi):
+        if not self.features:
             return "Unknown", 1.0
-        sims = np.dot(self.features_database, emb)
-        dists = 1 - sims
+        emb = self.extract(roi)
+        db = np.vstack(self.features)
+        sims = np.dot(db, emb)
+        dists = 1.0 - sims
         idx = np.argmin(dists)
-        return self.labels[idx], dists[idx]
+        return self.labels[idx], float(dists[idx])
 
-# Ejecución principal sin persistencia
 if __name__ == "__main__":
     cap = cv2.VideoCapture(DEVICE_ID)
-    if not cap.isOpened(): raise RuntimeError("No se pudo abrir la cámara")
+    if not cap.isOpened():
+        raise RuntimeError("Could not open camera")
+
+    # Set capture resolution from configuration
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
 
     detector = FaceDetectorYOLO()
-    recognizer = FaceRecognizerArcFaceTorch()
+    recognizer = FaceRecognizerArcFaceTorch(model_path="models/arcface.pt", threshold=0.3)
+
     training_mode = False
     target_samples = 250
     sample_count = 0
     current_label = None
 
-    print("[T] Entrenar nuevo label | [q] Salir")
+    print("[T] Train new label  |  [Q] Quit")
 
     while True:
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            break
 
         detections = detector.detect(frame)
 
         if training_mode and detections:
             (x1, y1, x2, y2), _ = detections[0]
-            roi = frame[y1:y2, x1:x2]
-            recognizer.add_training_sample(roi, current_label)
+            # Validate bounds
+            if x1 < 0 or y1 < 0 or x2 > frame.shape[1] or y2 > frame.shape[0]:
+                continue
+            roi = frame[y1 : y2, x1 : x2]
+            if roi.size == 0:
+                continue
+            recognizer.add_sample(roi, current_label)
             sample_count += 1
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-            cv2.putText(frame, f"Train {current_label}: {sample_count}/{target_samples}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+            cv2.putText(
+                frame,
+                "Train '{}': {}/{}".format(current_label, sample_count, target_samples),
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (255, 0, 0),
+                2,
+            )
             if sample_count >= target_samples:
-                training_mode = False; sample_count = 0
-                print(f"Entrenamiento completado para '{current_label}'")
+                training_mode = False
+                sample_count = 0
+                print("Training completed for '{}'".format(current_label))
         else:
             for (x1, y1, x2, y2), score in detections:
-                roi = frame[y1:y2, x1:x2]
+                # Validate bounds
+                if x1 < 0 or y1 < 0 or x2 > frame.shape[1] or y2 > frame.shape[0]:
+                    continue
+                roi = frame[y1 : y2, x1 : x2]
+                if roi.size == 0:
+                    continue
                 label, dist = recognizer.recognize(roi)
-                color = (0, 255, 0) if dist < recognizer.recognition_threshold else (0, 0, 255)
+                if dist < recognizer.threshold:
+                    color = (0, 255, 0)
+                else:
+                    color = (0, 0, 255)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"{label} ({dist:.2f})", (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                cv2.putText(
+                    frame,
+                    "{} ({:.2f})".format(label, dist),
+                    (x1, y1 - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    color,
+                    2,
+                )
 
         cv2.imshow("Feed YOLO", frame)
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'): break
-        if key == ord('t'):
+        if key == ord("q"):
+            break
+        if key == ord("t"):
             lbl = input("Label: ").strip()
-            if lbl: current_label = lbl; training_mode = True
+            if lbl:
+                current_label = lbl
+                training_mode = True
 
     cap.release()
     cv2.destroyAllWindows()
