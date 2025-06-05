@@ -1,9 +1,7 @@
 import cv2
 import numpy as np
 import torch
-import torchvision.transforms as transforms
 from ultralytics import YOLO
-from PIL import Image
 
 MODEL_PATH = "models/yolov8n-face.pt"
 DEVICE_ID = 0
@@ -20,15 +18,23 @@ class FaceRecognizerArcFaceTorch:
         self.features_database = []
         self.labels = []
         self.recognition_threshold = recognition_threshold
-        self.transform = transforms.Compose([
-            transforms.Resize((112, 112)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)
-        ])
 
     def preprocess(self, face_image):
-        pil = Image.fromarray(cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB))
-        return self.transform(pil).unsqueeze(0).to(self.device)
+        # Input: face_image is a BGR numpy array (H×W×3 uint8)
+        # 1) Convert BGR → RGB
+        rgb = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
+        # 2) Resize to (112,112)
+        resized = cv2.resize(rgb, (112, 112), interpolation=cv2.INTER_LINEAR)
+        # 3) Convert to float32 in [0,1]
+        arr = resized.astype(np.float32) / 255.0
+        # 4) Normalize to [-1, +1]
+        arr = (arr - 0.5) / 0.5
+        # 5) Transpose H×W×C → C×H×W
+        arr = np.transpose(arr, (2, 0, 1))
+        # 6) Convert to torch tensor, añadir batch
+        tensor = torch.from_numpy(arr).unsqueeze(0).to(self.device)
+        return tensor
+
 
     def extract_features(self, face_image):
         tensor = self.preprocess(face_image)
