@@ -77,6 +77,29 @@ class FaceRecognizerMobileFaceNetTorch:
         distances = 1 - similarities
         min_index = int(np.argmin(distances))
         return self.labels[min_index], float(distances[min_index])
+    
+    def __getstate__(self):
+        # Tomamos un shallow copy del dict interno
+        state = self.__dict__.copy()
+        # Eliminamos los objetos que no se pueden serializar
+        state.pop("model", None)
+        state.pop("transform", None)
+        return state
+
+    def __setstate__(self, state):
+        # Restauramos el resto de atributos
+        self.__dict__.update(state)
+        # Reconstruimos el modelo TorchScript
+        self.device = state.get("device", "cpu")
+        self.model = torch.jit.load(self.model_path, map_location=self.device)
+        self.model.to(self.device)
+        self.model.eval()
+        # Reconstruimos la transformación
+        self.transform = transforms.Compose([
+            transforms.Resize((112, 112)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
 
 # =============================================================================
 # Utility functions to save/load the recognizer state.
